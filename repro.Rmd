@@ -1,0 +1,497 @@
+---
+title: "Reproducibility"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = F, message = F)
+
+pacman::p_load(tidyverse, ggpubr, patchwork, ggsignif, ggthemes, see, cocor)
+
+yt_red <- "#FF0000"
+tk_blue <- "#46d5e0"
+custom_colors <- c(tk_blue, yt_red)
+
+get_plabs <- function (pval) {
+  dplyr::case_when(is.na(pval) ~ "", pval < 0.001 ~ "p < 0.001", 
+                   pval < 0.01 ~ "p < 0.01", pval < 0.05 ~ "p < 0.05", 
+                   pval < 0.1 ~ "p < 0.10", TRUE ~ "n.s.")
+}
+
+set.seed(24101991)
+
+options(scipen = 999)
+
+``` 
+
+## Data {.tabset}
+
+Data can be found on [osf.io](https://osf.io/c4xq3/).
+
+We split our data from TikTok and Youtube into two datasets.
+
+The first dataset contains summary statistics at the account-level for all accounts producing content on Youtube and Tiktok (i.e. accounts who produced at least one video that appears in our dataset). It includes the following variables: 
+
+* n_follower: the number of followers/subscribers
+* n_video: the number of videos produced by the account
+* mean_play: the average number of plays per video
+* median_play: the median number of plays per video
+* total_play: the total number of plays
+* most_popular: the maximum number of plays gathered by one video
+* ratio: total_play/n_follower
+* peak_mean_ratio = most_popular/mean_play
+* peak_median_ratio = most_popular/median_play
+* gini_views: the Gini coefficient of the views representing providing a measure for how equally distributed the views are across all videos produced by an account
+
+The second dataset contains summary statistics on all the commenter accountson Youtube and Tiktok (i.e. accounts who commented at least one political video in our dataset). It includes following variables: 
+
+* n_videos: the number of videos produced by an account
+* n_comment: the number of comments posted by an account
+
+### Content-producing accounts
+
+```{r}
+dt_h1 <- read_rds("data/dt_h1.rds") %>%
+  glimpse
+
+bt_h1 <- 1:500 %>%
+  map_dfr(~{
+    dt_h1 %>%
+      group_by(Platform) %>%
+      sample_n(n()*20/100) %>%
+      mutate(bt_index = .x) %>%
+      ungroup
+  })
+
+```
+
+### Commenter accounts
+
+```{r}
+dt_h2 <- read_rds("data/dt_h2.rds") %>%
+  glimpse
+
+bt_h2 <- 1:500 %>%
+  map_dfr(~{
+    dt_h2 %>%
+      filter(!is.na(n_comment) | Platform == "YouTube") %>%
+      group_by(Platform) %>%
+      sample_n(n()*20/100) %>%
+      mutate(bt_index = .x) %>%
+      ungroup
+  })
+```
+
+## Figure 2 - Higher Views to Followers Ratio on TikTok {.tabset}
+
+The total views/followers ratio is higher on TikTok suggesting that on Tiktok additional followers translate in a lower number of additional views than on YouTube. 
+
+### Total number of plays/number of followers
+
+```{r}
+gg_density <- dt_h1 %>%
+  ggplot(aes(x = ratio, fill = Platform)) +
+  geom_density(color = NA, alpha = 0.8) +
+  labs(x = "", y = "Density\n", 
+       title = "A: Logged Ratio") +
+  theme_minimal() +
+  scale_y_continuous(n.breaks = 3) +
+  theme(legend.position = "none") +
+  scale_fill_manual(values = custom_colors) +
+  scale_x_log10(limits = c(1, 30000))
+
+w_results <- wilcox.test(ratio ~ Platform, data = dt_h1, paired = F)
+
+median_labs <- dt_h1 %>%
+  group_by(Platform) %>%
+  summarize(ratio = median(ratio, na.rm = T) %>% round(2)) %>%
+  mutate(ratio_label = paste0("Median: ", ratio))
+
+gg_boxplot <- dt_h1 %>%
+  ggplot(aes(x= Platform, y = ratio+1, fill = Platform)) +
+  geom_boxplot() +
+  coord_flip()  +
+  labs(x = "Platform\n", y = "\nTotal Views to Followers/Subscribers Ratio") +
+  theme_minimal() +
+  theme(legend.position = "none")+
+  scale_fill_manual(values = custom_colors) +
+  geom_signif(comparisons = list(c("YouTube", "TikTok")),
+              annotation=get_plabs(w_results$p.value), vjust=-0.65)  +
+  geom_text(data = median_labs,aes(label = ratio_label), nudge_x = -0.25, nudge_y = 0.85) +
+  scale_y_log10(limits = c(1, 30000))
+
+h1_logged <- wrap_plots(gg_density, gg_boxplot, nrow = 2, heights = c(0.66, 0.33))
+h1_logged
+```
+
+### Bootstrapped Total number of plays/number of followers
+
+```{r}
+bt_moment <- bt_h1 %>%
+  group_by(bt_index, Platform) %>%
+  summarize(ratio = median(ratio, na.rm = T) %>% round(2), .groups = "drop") %>%
+  group_by(Platform) %>%
+  summarise(mean = mean(ratio), 
+            lbound = quantile(ratio, 5/100), 
+            hbound = quantile(ratio, 95/100), 
+            min = min(ratio), 
+            max = max(ratio))
+
+p1 <- bt_h1 %>%
+  group_by(bt_index, Platform) %>%
+  summarize(ratio = median(ratio, na.rm = T) %>% round(2)) %>%
+  ggplot(aes(x = ratio, fill = Platform)) + 
+  geom_density(color = NA, alpha = 0.8, show.legend = F) +
+  scale_fill_manual(values = custom_colors) +
+  theme_minimal() +
+  labs(y = "", x = "", 
+       title = "B: Bootstrapped Median Ratios")
+
+p2 <- bt_moment %>%
+  ggplot(aes(x = Platform, color = Platform, y = mean, ymin = lbound, ymax = hbound)) +
+  geom_point(show.legend = F) +
+  geom_linerange(show.legend = F) +
+  scale_color_manual(values = custom_colors) +
+  coord_flip() +
+  ylim(c(min(bt_moment$min), max(bt_moment$max))) +
+  theme_minimal() +
+  labs(y = "\nBootstrapped Median Total Views to Followers/Subscribers Ratio", x = "")
+
+h1_bt_view_follower_ratio <- patchwork::wrap_plots(p1, p2, ncol = 1, heights = c(0.66, 0.33))
+
+h1_bt_view_follower_ratio
+
+```
+
+### Combined {.active}
+
+```{r, width = 12, height = 6}
+wrap_plots(h1_logged, h1_bt_view_follower_ratio, ncol= 2)
+```
+
+
+## Figure 3 - More commenters also create videos on TikTok {.tabset}
+
+Among accounts that leave comments, the percentage who also upload videos is larger on TikTok than on YouTube
+
+### Number of videos created by commenting account 
+
+```{r}
+gg_density <- dt_h2 %>%
+  mutate(n_videos = ifelse(is.na(n_videos), 0, n_videos + 1)) %>%
+  ggplot(aes(x = n_videos, fill = Platform)) +
+  geom_density(color = NA, alpha = 0.8) +
+  labs(x = "", y = "Density\n", 
+       title = "A: Videos uploaded by Commenters") +
+  theme_minimal() +
+  scale_y_continuous(n.breaks = 3) +
+  scale_x_log10() +
+  theme(legend.position = "none") +
+  scale_fill_manual(values = custom_colors)
+
+w_results <- wilcox.test(log(n_videos) ~ Platform, data = dt_h2, paired = F)
+
+median_labs <- dt_h2 %>%
+  # filter(n_videos != 0) %>% 
+  group_by(Platform) %>%
+  summarize(n_videos = median(n_videos, na.rm = T) %>% round(2)) %>%
+  mutate(ratio_label = paste0("Median: ", n_videos))
+
+gg_boxplot <- dt_h2 %>%
+  mutate(n_videos = ifelse(is.na(n_videos), 0, n_videos + 1)) %>%
+  ggplot(aes(x= Platform, y = n_videos, fill = Platform)) +
+  geom_boxplot() +
+  coord_flip()  +
+  labs(x = "Platform\n", y = "\nVideos uploaded by Commenters") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  scale_y_log10() +
+  geom_signif(comparisons = list(c("YouTube", "TikTok")),
+              annotation=get_plabs(w_results$p.value), vjust=-0.5, test = "wilcox.test", test.args = list(paired = F))  +
+  geom_text(data = median_labs,aes(y = n_videos + 3, label = ratio_label), nudge_x = 0.15, nudge_y = 0.35) +
+  scale_fill_manual(values = custom_colors) 
+
+h2_incl_zero_logged <- wrap_plots(gg_density, gg_boxplot, nrow = 2, heights = c(0.66, 0.33))
+h2_incl_zero_logged
+```
+
+### Bootstrapped number of videos created by commenting account 
+
+```{r}
+bt_moment <- bt_h2 %>%
+  group_by(bt_index, Platform) %>%
+  summarize(ratio = median(n_videos, na.rm = T) %>% round(2)) %>%
+  group_by(Platform) %>%
+  summarise(median = mean(ratio), 
+            lbound = quantile(ratio, 5/100), 
+            hbound = quantile(ratio, 95/100), 
+            min = min(ratio), 
+            max = max(ratio))
+
+p1 <- bt_h2 %>%
+  group_by(bt_index, Platform) %>%
+  summarize(ratio = median(n_videos, na.rm = T) %>% round(2)) %>%
+  ggplot(aes(x = ratio, fill = Platform)) + 
+  geom_density(color = NA, alpha = 0.8, show.legend = F) +
+  scale_fill_manual(values = custom_colors) +
+  theme_minimal() +
+  labs(y = "", x = "", 
+       title = "B: Bootstrapped Median Videos uploaded")
+
+p2 <- bt_moment %>%
+  ggplot(aes(x = Platform, color = Platform, y = median, ymin = lbound, ymax = hbound)) +
+  geom_point(show.legend = F) +
+  geom_linerange(show.legend = F) +
+  scale_color_manual(values = custom_colors) +
+  coord_flip() +
+  ylim(c(min(bt_moment$min), max(bt_moment$max))) +
+  theme_minimal() +
+  labs(y = "\nBootstrapped Median Videos uploaded by Commenters", x = "")
+
+h2_bt_commenters <- patchwork::wrap_plots(p1, p2, ncol = 1, heights = c(0.66, 0.33))
+h2_bt_commenters
+```
+
+### Combined {.active}
+
+```{r, width = 16, height = 6}
+wrap_plots(h2_incl_zero_logged, h2_bt_commenters, ncol= 2)
+```
+
+## Figure 4 - Subscriber count explains more of the variance in YouTube Views
+
+The relationship between followers and video views is weaker for TikTok than for YouTube.
+
+### Number of followers/number of plays
+
+```{r}
+h3_log <- dt_h1 %>%
+  ggplot(aes(x = n_follower, y = median_play, color = Platform)) +
+  geom_point2() +
+  geom_smooth(method = "lm", show.legend = F)  +
+  scale_x_log10(labels = scales::label_number(), breaks = scales::breaks_log(6)) +
+  scale_y_log10(labels = scales::label_number(), breaks = scales::breaks_log(6)) +
+  stat_cor(show.legend = F, aes(label = paste(paste("R ==", ..r..), get_plabs(..p..), sep = "~`,`~"))) +
+  labs(x = "\nNumber of Followers/Subscribers", y = "Median Video Plays\n", title = "A: Followers/Subscribers X Video Plays") +
+  theme_minimal() +
+  scale_color_manual(values = custom_colors) +
+  theme(legend.position = "top")
+h3_log
+```
+
+### Bootstrapped correlation between the number of followers and number of plays
+
+```{r}
+bt_moment <- bt_h1 %>%
+  drop_na(median_play, n_follower, Platform) %>%
+  group_by(bt_index, Platform) %>%
+  summarise(coef = cor(median_play, n_follower)) %>%
+  group_by(Platform) %>%
+  summarise(mean = mean(coef), 
+            lbound = quantile(coef, 5/100), 
+            hbound = quantile(coef, 95/100), 
+            min = min(coef), 
+            max = max(coef))
+
+p1 <- bt_h1 %>%
+  drop_na(median_play, n_follower, Platform) %>%
+  group_by(bt_index, Platform) %>%
+  summarise(coef = cor(median_play, n_follower)) %>%
+  ggplot(aes(x = coef, fill = Platform)) + 
+  geom_density(color = NA, alpha = 0.8, show.legend = F) +
+  scale_fill_manual(values = custom_colors) +
+  theme_minimal() +
+  labs(y = "Density", x = "", title = "B: Bootstrapped Correlations")
+
+p2 <- bt_moment %>%
+  ggplot(aes(x = Platform, color = Platform, y = mean, ymin = lbound, ymax = hbound)) +
+  geom_point(show.legend = F) +
+  geom_linerange(show.legend = F) +
+  scale_color_manual(values = custom_colors) +
+  coord_flip() +
+  ylim(c(min(bt_moment$min), max(bt_moment$max))) +
+  theme_minimal() +
+  labs(y = "\nBootstrapped Correlation between the\nnumber of followers and the median number of plays", x = "")
+
+h3_bt_cor_follower <- patchwork::wrap_plots(p1, p2, ncol = 1, heights = c(3, 1))
+h3_bt_cor_follower
+```
+
+### Combined {.active}
+
+```{r, width = 12, height = 6}
+patchwork::wrap_plots(h3_log, h3_bt_cor_follower, ncol = 2)
+```
+
+## Figure 5 - Peak-Median views ratio is higher on TikTok {.tabset}
+
+The ratio of viewership for a single accounts’ most popular video to their median video viewership is higher on TikTok than on YouTube.
+
+### Peak-median ratio
+
+```{r}
+gg_density <- dt_h1 %>%
+  ggplot(aes(x = peak_median_ratio, fill = Platform)) +
+  geom_density(color = NA, alpha = 0.8) +
+  labs(x = "", y = "Density\n", title = "A: Peak-Median Plays Ratios") +
+  theme_minimal() +
+  scale_y_continuous(n.breaks = 3) +
+  scale_x_log10(limits = c(1, 500000)) +
+  theme(legend.position = "none") +
+  scale_fill_manual(values = custom_colors)
+
+median_labs <- dt_h1 %>%
+  group_by(Platform) %>%
+  summarize(peak_median_ratio = median(peak_median_ratio, na.rm = T) %>% round(2)) %>%
+  mutate(peak_median_ratio_label = paste0("Median: ", peak_median_ratio))
+
+w_results <- wilcox.test(log(peak_median_ratio+1) ~ Platform, data = dt_h1)
+
+gg_boxplot <- dt_h1 %>%
+  ggplot(aes(x= Platform, y = peak_median_ratio, fill = Platform)) +
+  geom_boxplot() +
+  coord_flip()  +
+  labs(x = "Platform\n", y = "\nPeak-Median Plays Ratios") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  geom_signif(comparisons = list(c("YouTube", "TikTok")),
+              annotation=get_plabs(w_results$p.value))  +
+  geom_text(data = median_labs,aes(label = peak_median_ratio_label), nudge_x = 0.3, nudge_y = 1.3) +
+  scale_fill_manual(values = custom_colors) +
+  scale_y_log10(limits = c(1, 500000))
+
+h5_bt_peak_med_ratio_bt <- patchwork::wrap_plots(p1, p2, ncol = 1, heights = c(0.66, 0.33))
+h5_bt_peak_med_ratio_bt
+```
+
+### Bootstrapped peak-median ratio
+
+```{r}
+
+bt_moment <- bt_h1 %>%
+  drop_na(peak_median_ratio, Platform) %>%
+  group_by(bt_index, Platform) %>%
+  summarise(median = median(peak_median_ratio)) %>%
+  group_by(Platform) %>%
+  summarise(mean = mean(median), 
+            lbound = quantile(median, 5/100), 
+            hbound = quantile(median, 95/100), 
+            min = min(median), 
+            max = max(median))
+
+p1 <- bt_h1 %>%
+  drop_na(peak_median_ratio, Platform) %>%
+  group_by(Platform, bt_index) %>%
+  summarise(median = median(peak_median_ratio)) %>%
+  ggplot(aes(x = median, fill = Platform)) + 
+  geom_density(color = NA, alpha = 0.8, show.legend = F) +
+  scale_fill_manual(values = custom_colors) +
+  xlim(c(min(bt_moment$min), max(bt_moment$max))) +
+  theme_minimal() +
+  labs(y = "", x = "", title = "B: Bootstrapped Median Ratios")
+
+p2 <- bt_moment %>%
+  ggplot(aes(x = Platform, color = Platform, y = mean, ymin = lbound, ymax = hbound)) +
+  geom_point(show.legend = F) +
+  geom_linerange(show.legend = F) +
+  scale_color_manual(values = custom_colors) +
+  coord_flip() +
+  ylim(c(min(bt_moment$min), max(bt_moment$max))) +
+  theme_minimal() +
+  labs(y = "\nBootstrapped Median Peak-Median Plays Ratios", x = "")
+
+h5_peak_median_ratio_logged <- wrap_plots(gg_density, gg_boxplot, nrow = 2, heights = c(0.66, 0.33))
+h5_peak_median_ratio_logged
+```
+
+### Combined {.active}
+
+```{r, width = 12, height = 6}
+patchwork::wrap_plots(h5_peak_median_ratio_logged, h5_bt_peak_med_ratio_bt, ncol = 2)
+```
+
+
+## Figure 6 - Distribution of video views per account shows a greater degree of inequality on TikTok {.tabset}
+
+The gini coefficient for views per account is higher on TikTok than on YouTube.
+
+### Gini coefficient of views per account
+
+```{r}
+gg_density <- dt_h1 %>%
+  ggplot(aes(x = gini_views, fill = Platform)) +
+  geom_density(color = NA, alpha = 0.8) +
+  labs(x = "", y = "Density\n", title = "A: Gini Coefficients for Video Views per Account") +
+  theme_minimal() +
+  scale_y_continuous(n.breaks = 3) +
+  theme(legend.position = "none") +
+  scale_fill_manual(values = custom_colors)
+
+w_results <- wilcox.test(gini_views ~ Platform, data = dt_h1)
+median_labs <- dt_h1 %>%
+  group_by(Platform) %>%
+  summarize(gini_views = median(gini_views, na.rm = T) %>% round(2)) %>%
+  mutate(gini_views_label = paste0("Median: ", gini_views))
+
+gg_boxplot <- dt_h1 %>%
+  ggplot(aes(x= Platform, y = gini_views, fill = Platform)) +
+  geom_boxplot() +
+  coord_flip()  +
+  labs(x = "Platform\n", y = "\nGini Coefficient Views") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  geom_signif(comparisons = list(c("YouTube", "TikTok")),
+              annotation=get_plabs(w_results$p.value), vjust=-0.5)  +
+  geom_text(data = median_labs,aes(label = gini_views_label), nudge_x = 0.3, nudge_y = -0.3) +
+  scale_fill_manual(values = custom_colors)
+
+h4_bt_gini <- patchwork::wrap_plots(p1, p2, ncol = 1, heights = c(0.66, 0.33))
+h4_bt_gini
+```
+
+### Bootstrapped gini coefficient of views per account
+
+```{r}
+bt_moment <- bt_h1 %>%
+  drop_na(Platform, gini_views) %>%
+  group_by(bt_index, Platform) %>%
+  summarise(median = median(gini_views)) %>%
+  group_by(Platform) %>%
+  summarise(mean = mean(median), 
+            lbound = quantile(median, 5/100), 
+            hbound = quantile(median, 95/100), 
+            min = min(median), 
+            max = max(median))
+
+p1 <- bt_h1 %>%
+  drop_na(gini_views, Platform) %>%
+  group_by(Platform, bt_index) %>%
+  summarise(median = median(gini_views)) %>%
+  ggplot(aes(x = median, fill = Platform)) + 
+  geom_density(color = NA, alpha = 0.8, show.legend = F) +
+  scale_fill_manual(values = custom_colors) +
+  xlim(c(min(bt_moment$min), max(bt_moment$max))) +
+  theme_minimal() +
+  labs(y = "", x = "", title = "B: Bootstrapped Median Gini Coefficients")
+
+p2 <- bt_moment %>%
+  ggplot(aes(x = Platform, color = Platform,
+             y = mean, ymin = lbound, ymax = hbound)) +
+  geom_point(show.legend = F) +
+  geom_linerange(show.legend = F) +
+  scale_color_manual(values = custom_colors) +
+  coord_flip() +
+  ylim(c(min(bt_moment$min), max(bt_moment$max))) +
+  theme_minimal() +
+  labs(y = "\nBootstrapped Median Gini Coefficient Views", x = "")
+
+h4_gini <- wrap_plots(gg_density, gg_boxplot, nrow = 2, heights = c(0.66, 0.33))
+h4_gini
+```
+
+### Combined {.active}
+
+```{r, width = 12, height = 6}
+patchwork::wrap_plots(h4_gini, h4_bt_gini, ncol = 2)
+```
+
